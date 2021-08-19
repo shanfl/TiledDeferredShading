@@ -20,4 +20,4 @@ glad.o: glad.cpp
 
 .PHONY: clean
 clean:
-	del main.exe *.o
+	rm main.exe *.o

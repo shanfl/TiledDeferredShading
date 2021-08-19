@@ -87,7 +87,7 @@ int main()
 
     // load models
     // -----------
-    Model backpack(string("resources/untitled.dae"));
+    Model backpack(string("resources/backpack/backpack.obj"));
     std::vector<glm::vec3> objectPositions;
     objectPositions.push_back(glm::vec3(-3.0, -0.5, -3.0));
     objectPositions.push_back(glm::vec3( 0.0, -0.5, -3.0));
