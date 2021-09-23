@@ -12,9 +12,14 @@
 
 #include <iostream>
 
-#define WORK_GROUP_SIZE_X 2
-#define WORK_GROUP_SIZE_Y 2
-#define MAX_NLIGHTS_PER_TILE 10
+struct LightInCompute
+{
+	glm::vec4 position;
+	float radius;
+};
+
+#define TILE_SIZE 16
+#define MAX_NLIGHTS_PER_TILE 1
 
 void framebuffer_size_callback(GLFWwindow *window, int width, int height);
 void mouse_callback(GLFWwindow *window, double xpos, double ypos);
@@ -38,13 +43,16 @@ bool firstMouse = true;
 float deltaTime = 0.0f;
 float lastFrame = 0.0f;
 
+int	nWorkGroupsX = (SCR_WIDTH + (SCR_WIDTH % TILE_SIZE)) / TILE_SIZE;
+int	nWorkGroupsY = (SCR_HEIGHT + (SCR_HEIGHT % TILE_SIZE)) / TILE_SIZE;
+
 int main()
 {
 	// glfw: initialize and configure
 	// ------------------------------
 	glfwInit();
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 4);
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
 #ifdef __APPLE__
@@ -109,7 +117,7 @@ int main()
 	unsigned int gBuffer;
 	glGenFramebuffers(1, &gBuffer);
 	glBindFramebuffer(GL_FRAMEBUFFER, gBuffer);
-	unsigned int gPosition, gNormal, gAlbedoSpec;
+	unsigned int gPosition, gNormal, gAlbedoSpec, gDepth;
 	// position color buffer
 	glGenTextures(1, &gPosition);
 	glBindTexture(GL_TEXTURE_2D, gPosition);
@@ -131,9 +139,21 @@ int main()
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, gAlbedoSpec, 0);
+	// depth buffer (used by compute shader)
+	glGenTextures(1, &gDepth);
+	glBindTexture(GL_TEXTURE_2D, gDepth);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, SCR_WIDTH, SCR_HEIGHT, 0, GL_RED, GL_FLOAT, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+	GLfloat borderColor[] = {1.0f, 1.0f, 1.0f, 1.0f};
+	glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, gDepth, 0);
 	// tell OpenGL which color attachments we'll use (of this framebuffer) for rendering
-	unsigned int attachments[3] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2};
-	glDrawBuffers(3, attachments);
+	unsigned int attachments[4] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3};
+	glDrawBuffers(4, attachments);
+
 	// create and attach depth buffer (renderbuffer)
 	unsigned int rboDepth;
 	glGenRenderbuffers(1, &rboDepth);
@@ -144,6 +164,26 @@ int main()
 	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
 		std::cout << "Framebuffer not complete!" << std::endl;
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+	// // configure depth fbo
+	// // ------------------------------
+	// unsigned int depthFbo;
+	// glGenFramebuffers(1, &depthFbo);
+	// glBindFramebuffer(GL_FRAMEBUFFER, depthFbo);
+	// unsigned int depthMap;
+	// // depth buffer
+	// glGenTextures(1, &depthMap);
+	// glBindTexture(GL_TEXTURE_2D, depthMap);
+	// glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, SCR_WIDTH, SCR_HEIGHT, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+	// glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	// glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	// glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+	// glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+	// GLfloat borderColor[] = {1.0f, 1.0f, 1.0f, 1.0f};
+	// glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
+	// glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthMap, 0);
+	// unsigned int attachment_depthmap[] = {GL_COLOR_ATTACHMENT0};
+	// glDrawBuffers(1, attachment_depthmap);
 
 	// lighting info
 	// -------------
@@ -171,6 +211,26 @@ int main()
 	shaderLightingPass.setInt("gPosition", 0);
 	shaderLightingPass.setInt("gNormal", 1);
 	shaderLightingPass.setInt("gAlbedoSpec", 2);
+	shaderLightingPass.setInt("gDepth", 3);
+
+	// // Test max group number and size
+	// int work_grp_cnt[3];
+
+	// glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 0, &work_grp_cnt[0]);
+	// glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 1, &work_grp_cnt[1]);
+	// glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 2, &work_grp_cnt[2]);
+
+	// printf("max global (total) work group counts x:%i y:%i z:%i\n",
+	// 	   work_grp_cnt[0], work_grp_cnt[1], work_grp_cnt[2]);
+
+	// int work_grp_size[3];
+
+	// glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 0, &work_grp_size[0]);
+	// glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 1, &work_grp_size[1]);
+	// glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 2, &work_grp_size[2]);
+
+	// printf("max local (in one shader) work group sizes x:%i y:%i z:%i\n",
+	// 	   work_grp_size[0], work_grp_size[1], work_grp_size[2]);
 
 	// render loop
 	// -----------
@@ -212,34 +272,69 @@ int main()
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
 		// x. computing shader
-		// Create light buffer
-		GLuint mLightBuffer, mIndexBuffer;
-		// glGenBuffers(1, &mLightBuffer);
-		// glBindBuffer(GL_SHADER_STORAGE_BUFFER, mLightBuffer);
-		// // glBufferData(GL_SHADER_STORAGE_BUFFER, NR_LIGHTS * sizeof(lightPositions), 0, GL_DYNAMIC_DRAW);
-		// glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(int), 0, GL_DYNAMIC_READ);
-		// int zero = 2;
-		// glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(int), &zero);
-		// glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, mLightBuffer);
-		// glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-		// Create visible light indices buffer
-		glGenBuffers(1, &mIndexBuffer);
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, mIndexBuffer);
-		glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(int) * WORK_GROUP_SIZE_X * WORK_GROUP_SIZE_Y * MAX_NLIGHTS_PER_TILE, NULL, GL_DYNAMIC_DRAW);
-		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, mIndexBuffer);
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
 		computeTest.use();
-		glDispatchCompute((GLuint)WORK_GROUP_SIZE_X, (GLuint)WORK_GROUP_SIZE_Y, 1);
-		glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+		// Create buffer of lights
+		GLuint mLightBuffer, mIndexBuffer;
+		glGenBuffers(1, &mLightBuffer);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, mLightBuffer);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, NR_LIGHTS * sizeof(LightInCompute), NULL, GL_DYNAMIC_DRAW);
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, mLightBuffer);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+		// Initialize buffer of lights
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, mLightBuffer);
+		LightInCompute *ptr = (LightInCompute *)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_WRITE);
+		for (int i = 0; i < NR_LIGHTS; i++)
+		{
+			LightInCompute &light = ptr[i];
 
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, mIndexBuffer);
-		int *ptr = (int *)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
-		int c = ptr[0];
-		cout << c << endl;
+			light.position[0] = lightPositions[i][0];
+			light.position[1] = lightPositions[i][1];
+			light.position[2] = lightPositions[i][2];
+			light.position[3] = 1.0;
+
+			const float constant = 1.0; // note that we don't send this to the shader, we assume it is always 1.0 (in our case)
+			const float linear = 0.7;
+			const float quadratic = 1.8;
+			const float maxBrightness = std::fmaxf(std::fmaxf(lightColors[i].r, lightColors[i].g), lightColors[i].b);
+			light.radius = (-linear + std::sqrt(linear * linear - 4 * quadratic * (constant - (256.0f / 5.0f) * maxBrightness))) / (2.0f * quadratic);
+		}
 		glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
 		glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+		// Create buffer of visible light indices
+		glGenBuffers(1, &mIndexBuffer);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, mIndexBuffer);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(int) * nWorkGroupsX * nWorkGroupsY * MAX_NLIGHTS_PER_TILE, NULL, GL_DYNAMIC_DRAW);
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, mIndexBuffer);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+		// Set uniform
+		glActiveTexture(GL_TEXTURE4);
+		glUniform1i(glGetUniformLocation(computeTest.ID, "depthMap"), 4);
+		glBindTexture(GL_TEXTURE_2D, gDepth);
+		computeTest.setMat4("view", view);
+		computeTest.setMat4("projection", projection);
+		glm::vec2 screenSize(SCR_WIDTH, SCR_HEIGHT);
+		computeTest.setVec2("screenSize", screenSize);
+		computeTest.setInt("lightCount", NR_LIGHTS);
+
+		glDispatchCompute(nWorkGroupsX, nWorkGroupsY, 1);
+		glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+
+		// Read index (DEBUG)
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, mIndexBuffer);
+		int *ptrIndex = (int *)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
+		for (int i = 0; i < nWorkGroupsY; i++)
+		{
+			for (int j = 0; j < nWorkGroupsX; j++)
+			{
+				for (int k = 0; k < MAX_NLIGHTS_PER_TILE; k++)
+				{
+					int idx = ptrIndex[i * nWorkGroupsX * MAX_NLIGHTS_PER_TILE + j * MAX_NLIGHTS_PER_TILE + k];
+					cout << idx << ' ';
+				}
+			}
+			cout << ";" << endl;
+		}
+		glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
 
 		// 2. lighting pass: calculate lighting by iterating over a screen filled quad pixel-by-pixel using the gbuffer's content.
 		// -----------------------------------------------------------------------------------------------------------------------
